@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.4] - 2026-09-08
+Requires macOS 12.0 and higher.
+
+### Added
+- New internal per-user preference key `firstRunGracePeriodState`, stored through `UserDefaults.standard` in `~/Library/Preferences/com.github.macadmins.Nudge.plist`. It contains property-list-encoded data recording the marker path and creation date, the first event's update requirements, its saved installation deadline (when eligible), and whether the allowance has ended. This preserves the deadline across launches and prevents configuration reversions from restarting grace. It is application state, not an administrator-configurable setting; deleting it removes that user's recorded grace history.
+
+### Changed
+- Installation grace now belongs to the first event observed for a deployment. Its deadline is anchored to marker creation time and remains stable across launches and after the marker ages out. Later update-requirement changes end the allowance, including earlier deadlines for the same OS version. See [grace-period behavior](docs/grace-periods.md) and [706](https://github.com/macadmins/nudge/issues/706).
+- Grace-period logs show the original and effective deadlines and explain whether the first-event allowance was recorded, reused, ended, or bypassed.
+- Added persistent configuration/SOFA simulation scenarios and environment-neutral agent guidance. The runner uses MacAdmins Python.
+
+### Fixed
+- Grace-period evaluation honors `-simulate-date`, consistently with other deadline logic.
+
 ## [2.1.3] - 2026-05-07
 Requires macOS 12.0 and higher.
 

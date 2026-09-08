@@ -9,10 +9,9 @@ of truth shared by every agent tool.
 ## Claude Code specifics
 
 - Read `.agents/swift-swiftui.md` before changing Swift code or the UI.
-- Agent teams are the default for non-trivial parallel work so the operator can watch
-  and steer teammates in real time. Use subagents only for fire-and-forget
-  lookups where only the consolidated result matters. If agent teams appear
-  unavailable, say so and ask the operator to verify before falling back.
-- Execute prepared plans with `superpowers:subagent-driven-development`; do not
-  offer inline execution unless the operator asks for it.
+- Read `.agents/simulation-testing.md` for configuration, SOFA, deadline, and
+  startup work. Run the relevant command-line simulations and verify their
+  unified logs, using isolated fixtures and the existing simulated clock.
+- Follow the environment-neutral coordination guidance in `AGENTS.md`; Claude
+  agent teams are optional and must not block authorized work.
 - Never commit or push unless asked. Work on a branch if on `main`.

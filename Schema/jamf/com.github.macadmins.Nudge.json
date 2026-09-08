@@ -965,7 +965,7 @@
                             ]
                         },
                         "gracePeriodInstallDelay": {
-                            "description": "The amount of time in hours Nudge will extend the requiredInstallationDate for newly provisioned devices.",
+                            "description": "The first event must be observed while the marker file is younger than this many hours. Its deadline is the later of the original deadline and marker creation time plus gracePeriodInstallDelay and gracePeriodLaunchDelay hours. This saved deadline remains after the marker ages out. Later update-requirement changes end the installation allowance; reverting configuration does not restart it.",
                             "anyOf": [
                                 {
                                     "title": "Not Configured",
@@ -1003,7 +1003,7 @@
                             ]
                         },
                         "gracePeriodPath": {
-                            "description": "The path of the file Nudge will read and assess for allowGracePeriods.",
+                            "description": "The marker file whose creation date identifies the deployment for allowGracePeriods. Modification time is not used. A new creation date or marker path starts a new deployment. Existing first-event state retains the recorded date if the file becomes unavailable.",
                             "anyOf": [
                                 {
                                     "type": "null",

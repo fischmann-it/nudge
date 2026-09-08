@@ -48,6 +48,13 @@ artifacts. Run it only when release or packaging work is in scope.
 Run checks appropriate to the change. Documentation-only edits need link and
 diff checks, not an application build. State what was tested and any gaps.
 
+For deadline, grace-period, SOFA, preference, or startup changes, read
+[.agents/simulation-testing.md](.agents/simulation-testing.md) and run relevant
+configuration-driven app simulations with unified-log assertions in addition to
+unit tests. Use `-simulate-os-version`, `-simulate-date`, and local JSON/SOFA
+fixtures. Confirm the evaluated date and decision in logs. Keep test preferences
+and caches isolated from production Nudge; the documented runner handles this.
+
 ## Working conventions
 
 - Follow nearby code style and keep changes focused on the requested behavior.
@@ -57,20 +64,17 @@ diff checks, not an application build. State what was tested and any gaps.
   when configuration behavior changes.
 - Preserve deferral, deadline, grace-period, and update behavior unless changing
   that behavior is part of the task. Add focused regression coverage for it.
+- Use the MacAdmins Python shebang for repository Python scripts:
+  `#!/Library/ManagedFrameworks/Python/Python3.framework/Versions/Current/bin/python3`.
 - Keep generated build products, credentials, and machine-specific settings out
   of version control.
 
 ## Agent coordination
 
-Prefer operator-visible agent teams for non-trivial parallel work so the operator can
-watch and steer teammates. Use teams for cross-cutting research, multi-module
-changes, and reviews that benefit from independent perspectives. Assign clear
-ownership and tell teammates to preserve each other's changes.
-
-If agent teams are unavailable or their required configuration appears missing,
-say so and ask the operator to verify before falling back to subagents. Reserve subagents
-for focused, fire-and-forget work where only the consolidated result matters.
-
-When executing a prepared plan, use `superpowers:subagent-driven-development`.
-Do not offer inline execution unless the operator explicitly requests it. Follow the
-team-availability rule above if execution would require an unavailable capability.
+Use the capabilities available in the current agent environment. Work locally
+when that is the simplest way to complete the task. Use supported parallel agents
+for independent work when useful, with clear ownership and instructions to
+preserve each other's changes. Do not require Claude-specific agent teams or
+pause authorized work because a particular coordination feature is unavailable.
+Prepared plans may be executed locally; no particular skill or delegation mode
+is mandatory.

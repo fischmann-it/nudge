@@ -138,6 +138,44 @@ struct BlurManager {
     }
 }
 
+// Installation grace belongs to one update event within a marker's deployment.
+// Keep it separate from deferral counters, which track only OS-version increases.
+private struct GracePeriodEvent: Codable, Equatable {
+    let requiredOSVersion: String
+    let configuredOSVersion: String
+    let originalDeadline: Date
+    let configuredDeadline: Date
+    let usesSOFA: Bool
+    let policy: [String: Int]
+
+    init(deadline: Date) {
+        requiredOSVersion = nudgePrimaryState.requiredMinimumOSVersion
+        configuredOSVersion = PrefsWrapper.requiredMinimumOSVersion
+        originalDeadline = deadline
+        configuredDeadline = PrefsWrapper.requiredInstallationDate
+        usesSOFA = OptionalFeatureVariables.utilizeSOFAFeed
+        policy = [
+            "gracePeriodInstallDelay": UserExperienceVariables.gracePeriodInstallDelay,
+            "gracePeriodLaunchDelay": UserExperienceVariables.gracePeriodLaunchDelay,
+            "minorVersionRecalculationThreshold": OSVersionRequirementVariables.minorVersionRecalculationThreshold,
+            "standardMajorUpgradeSLA": OSVersionRequirementVariables.standardMajorUpgradeSLA,
+            "standardMinorUpdateSLA": OSVersionRequirementVariables.standardMinorUpdateSLA,
+            "nonActivelyExploitedCVEsMajorUpgradeSLA": OSVersionRequirementVariables.nonActivelyExploitedCVEsMajorUpgradeSLA,
+            "nonActivelyExploitedCVEsMinorUpdateSLA": OSVersionRequirementVariables.nonActivelyExploitedCVEsMinorUpdateSLA,
+            "activelyExploitedCVEsMajorUpgradeSLA": OSVersionRequirementVariables.activelyExploitedCVEsMajorUpgradeSLA,
+            "activelyExploitedCVEsMinorUpdateSLA": OSVersionRequirementVariables.activelyExploitedCVEsMinorUpdateSLA
+        ]
+    }
+}
+
+private struct GracePeriodEventState: Codable {
+    let markerPath: String
+    let markerCreationDate: Date
+    let firstEvent: GracePeriodEvent
+    let installationDeadline: Date?
+    var invalidated: Bool
+}
+
 struct AppStateManager {
     func activateNudge() {
         if OptionalFeatureVariables.honorFocusModes {
@@ -201,33 +239,74 @@ struct AppStateManager {
         return isDeferralAllowed(threshold: UserExperienceVariables.approachingWindowTime, logMessage: "Device allowCustomDeferralButton")
     }
 
-    private func calculateNewRequiredInstallationDateIfNeeded(currentDate: Date, gracePeriodPathCreationDate: Date) -> Date {
+    private static let gracePeriodStateKey = "firstRunGracePeriodState"
+
+    private func loadGracePeriodState(defaults: UserDefaults) throws -> GracePeriodEventState? {
+        guard let value = defaults.object(forKey: Self.gracePeriodStateKey) else { return nil }
+        guard let data = value as? Data else { throw CocoaError(.coderReadCorrupt) }
+        return try PropertyListDecoder().decode(GracePeriodEventState.self, from: data)
+    }
+
+    private func saveGracePeriodState(_ state: GracePeriodEventState, defaults: UserDefaults) throws {
+        let data = try PropertyListEncoder().encode(state)
+        defaults.set(data, forKey: Self.gracePeriodStateKey)
+    }
+
+    private func calculateNewRequiredInstallationDateIfNeeded(currentDate: Date, gracePeriodPathCreationDate: Date, previousState: GracePeriodEventState?, defaults: UserDefaults) throws -> Date {
         let gracePeriodInstallDelay = UserExperienceVariables.gracePeriodInstallDelay
         let gracePeriodLaunchDelay = UserExperienceVariables.gracePeriodLaunchDelay
         let gracePeriodPath = UserExperienceVariables.gracePeriodPath
-        let gracePeriodPathCreationTimeInHours = Int(currentDate.timeIntervalSince(gracePeriodPathCreationDate) / 3600)
-        let gracePeriodsDelay = gracePeriodInstallDelay + gracePeriodLaunchDelay
+        let fileAge = currentDate.timeIntervalSince(gracePeriodPathCreationDate)
+        let fileAgeInHours = Int(fileAge / 3600)
         let originalRequiredInstallationDate = requiredInstallationDate
+        let event = GracePeriodEvent(deadline: originalRequiredInstallationDate)
 
-        // Bail Nudge if within gracePeriodLaunchDelay
-        if gracePeriodLaunchDelay > gracePeriodPathCreationTimeInHours {
-            LogManager.notice("gracePeriodPath (\(gracePeriodPath)) within gracePeriodLaunchDelay (\(gracePeriodLaunchDelay)) - File age is \(gracePeriodPathCreationTimeInHours) hours", logger: uiLog)
-            nudgePrimaryState.shouldExit = true
-            return currentDate
-        } else {
-            LogManager.info("gracePeriodPath (\(gracePeriodPath)) outside of gracePeriodLaunchDelay (\(gracePeriodLaunchDelay)) - File age is \(gracePeriodPathCreationTimeInHours) hours", logger: uiLog)
-        }
+        LogManager.notice("Evaluating grace periods - currentDate: \(currentDate), requiredInstallationDate: \(originalRequiredInstallationDate), gracePeriodPath: \(gracePeriodPath), creationDate: \(gracePeriodPathCreationDate), file age: \(fileAgeInHours) hours, gracePeriodLaunchDelay: \(gracePeriodLaunchDelay) hours, gracePeriodInstallDelay: \(gracePeriodInstallDelay) hours", logger: uiLog)
 
-        if gracePeriodInstallDelay > gracePeriodPathCreationTimeInHours {
-            if currentDate > originalRequiredInstallationDate {
-                requiredInstallationDate = currentDate.addingTimeInterval(Double(gracePeriodsDelay) * 3600)
-                LogManager.notice("Device permitted for gracePeriodInstallDelay - setting date from: \(originalRequiredInstallationDate) to: \(requiredInstallationDate)", logger: uiLog)
-                return requiredInstallationDate
+        var state: GracePeriodEventState
+        if let previousState = previousState,
+           previousState.markerPath == gracePeriodPath,
+           previousState.markerCreationDate == gracePeriodPathCreationDate {
+            state = previousState
+            if !state.invalidated && state.firstEvent != event {
+                state.invalidated = true
+                try saveGracePeriodState(state, defaults: defaults)
+                LogManager.notice("Installation grace ended - update requirements changed; honoring event deadline: \(originalRequiredInstallationDate)", logger: uiLog)
             }
         } else {
-            LogManager.info("gracePeriodPath (\(gracePeriodPath)) outside of gracePeriodInstallDelay (\(gracePeriodInstallDelay)) - File age is \(gracePeriodPathCreationTimeInHours) hours", logger: uiLog)
+            // On upgrade from a version without this state, an already-known different
+            // target is evidence that this is not the user's first event.
+            let previousVersion = defaults.string(forKey: "requiredMinimumOSVersion")
+            let isLaterEvent = previousState == nil && previousVersion != nil && previousVersion != "0.0" && previousVersion != event.requiredOSVersion
+            let eligible = !isLaterEvent && gracePeriodInstallDelay > 0 && fileAge >= 0 && fileAge < Double(gracePeriodInstallDelay) * 3600
+            let graceDeadline = gracePeriodPathCreationDate.addingTimeInterval((Double(gracePeriodInstallDelay) + Double(gracePeriodLaunchDelay)) * 3600)
+            let installationDeadline = eligible ? max(originalRequiredInstallationDate, graceDeadline) : nil
+            state = GracePeriodEventState(markerPath: gracePeriodPath, markerCreationDate: gracePeriodPathCreationDate, firstEvent: event, installationDeadline: installationDeadline, invalidated: isLaterEvent)
+            try saveGracePeriodState(state, defaults: defaults)
+            if let installationDeadline = installationDeadline {
+                LogManager.notice("Recorded first grace-period event - installation deadline: \(installationDeadline)", logger: uiLog)
+            } else {
+                LogManager.notice("First grace-period event has no installation allowance - marker is ineligible or a previous event is already known; honoring deadline: \(originalRequiredInstallationDate)", logger: uiLog)
+            }
         }
-        return PrefsWrapper.requiredInstallationDate
+
+        // Launch suppression remains based on marker age and is independent of the
+        // saved installation allowance. Record the first event before exiting here.
+        if gracePeriodLaunchDelay > fileAgeInHours {
+            LogManager.notice("gracePeriodPath (\(gracePeriodPath)) within gracePeriodLaunchDelay (\(gracePeriodLaunchDelay)) - File age is \(fileAgeInHours) hours", logger: uiLog)
+            nudgePrimaryState.shouldExit = true
+            return currentDate
+        }
+
+        if state.invalidated {
+            LogManager.notice("Installation grace remains ended for this deployment - honoring event deadline: \(originalRequiredInstallationDate)", logger: uiLog)
+        } else if let deadline = state.installationDeadline {
+            requiredInstallationDate = deadline
+            LogManager.notice("Applying first-event grace deadline - original: \(originalRequiredInstallationDate), effective: \(deadline)", logger: uiLog)
+        } else {
+            LogManager.notice("First grace-period event has no installation allowance - honoring deadline: \(originalRequiredInstallationDate)", logger: uiLog)
+        }
+        return requiredInstallationDate
     }
 
     func exitNudge() {
@@ -304,21 +383,63 @@ struct AppStateManager {
         return signingCertificateSummary
     }
 
-    func gracePeriodLogic(currentDate: Date? = nil, testFileDate: Date? = nil) -> Date {
-        let computedCurrentDate = currentDate == nil ? Date() : currentDate!
-        guard UserExperienceVariables.allowGracePeriods || PrefsWrapper.allowGracePeriods,
-              !CommandLineUtilities().demoModeEnabled() else {
-            return PrefsWrapper.requiredInstallationDate
+    func gracePeriodLogic(currentDate: Date? = nil, testFileDate: Date? = nil, defaults: UserDefaults? = nil) -> Date {
+        let computedCurrentDate = currentDate ?? DateManager().getCurrentDate()
+        guard !CommandLineUtilities().demoModeEnabled() else {
+            LogManager.notice("Grace periods bypassed - demo mode is enabled", logger: uiLog)
+            return requiredInstallationDate
         }
-
-        let gracePeriodPath = UserExperienceVariables.gracePeriodPath
-        guard FileManager.default.fileExists(atPath: gracePeriodPath) || CommandLineUtilities().unitTestingEnabled(),
-              let gracePeriodPathCreationDate = getCreationDateForPath(gracePeriodPath, testFileDate: testFileDate) else {
-            LogManager.error("Grace period path \(UserExperienceVariables.gracePeriodPath) not found or unable to get creation date - bypassing allowGracePeriods logic", logger: uiLog)
-            return PrefsWrapper.requiredInstallationDate
+        // The XCTest host must not create deployment state in the real app domain.
+        // Policy tests pass their own isolated defaults suite.
+        guard !CommandLineUtilities().unitTestingEnabled() || defaults != nil else {
+            return requiredInstallationDate
         }
+        guard let target = try? OSVersion(nudgePrimaryState.requiredMinimumOSVersion), target.major > 0 else {
+            LogManager.notice("Grace periods bypassed - no resolved update event is configured", logger: uiLog)
+            return requiredInstallationDate
+        }
+        let stateDefaults = defaults ?? Globals.nudgeDefaults
 
-        return calculateNewRequiredInstallationDateIfNeeded(currentDate: computedCurrentDate, gracePeriodPathCreationDate: gracePeriodPathCreationDate)
+        do {
+            let previousState = try loadGracePeriodState(defaults: stateDefaults)
+            let gracePeriodPath = UserExperienceVariables.gracePeriodPath
+            let attributes = try? FileManager.default.attributesOfItem(atPath: gracePeriodPath)
+            let fileCreationDate = attributes?[.creationDate] as? Date
+            let creationDate = fileCreationDate.map { testFileDate ?? $0 }
+
+            guard UserExperienceVariables.allowGracePeriods else {
+                var disabledState = previousState
+                if let creationDate = creationDate,
+                   previousState == nil || previousState?.markerPath != gracePeriodPath || previousState?.markerCreationDate != creationDate {
+                    // Enabling grace for a later configuration must not turn an
+                    // already-observed disabled first event into a fresh allowance.
+                    disabledState = GracePeriodEventState(markerPath: gracePeriodPath, markerCreationDate: creationDate, firstEvent: GracePeriodEvent(deadline: requiredInstallationDate), installationDeadline: nil, invalidated: true)
+                }
+                if var state = disabledState {
+                    state.invalidated = true
+                    try saveGracePeriodState(state, defaults: stateDefaults)
+                }
+                LogManager.notice("Grace periods bypassed - allowGracePeriods is false", logger: uiLog)
+                return requiredInstallationDate
+            }
+
+            // Once recorded, an unchanged event keeps its deadline even if the
+            // marker becomes unavailable. Still compare requirements so changing
+            // and then reverting configuration cannot revive grace in this path.
+            let savedCreationDate = previousState?.markerPath == gracePeriodPath ? previousState?.markerCreationDate : nil
+            guard let markerCreationDate = creationDate ?? savedCreationDate else {
+                LogManager.error("Grace period path \(gracePeriodPath) not found or unable to get creation date - bypassing allowGracePeriods logic", logger: uiLog)
+                return requiredInstallationDate
+            }
+            if creationDate == nil {
+                LogManager.warning("Grace period marker unavailable - using recorded creation date: \(markerCreationDate) for first-event evaluation", logger: uiLog)
+            }
+
+            return try calculateNewRequiredInstallationDateIfNeeded(currentDate: computedCurrentDate, gracePeriodPathCreationDate: markerCreationDate, previousState: previousState, defaults: stateDefaults)
+        } catch {
+            LogManager.error("Unable to read or save first-event grace state - honoring event deadline: \(requiredInstallationDate). Error: \(error)", logger: uiLog)
+            return requiredInstallationDate
+        }
     }
 
     func delayNudgeEventLogic(currentDate: Date = DateManager().getCurrentDate(), testFileDate: Date? = nil) -> Date {
